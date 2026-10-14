@@ -58,6 +58,11 @@ export interface ElectronAPI {
   updateConfig: (config: { apiKey?: string; model?: string }) => Promise<boolean>
   checkApiKey: () => Promise<boolean>
   validateApiKey: (apiKey: string) => Promise<{ valid: boolean; error?: string }>
+  getOpenAiModels: (apiKey?: string) => Promise<{
+    success: boolean
+    models?: Array<{ id: string; created?: number }>
+    error?: string
+  }>
   openLink: (url: string) => void
   onApiKeyInvalid: (callback: () => void) => () => void
   removeListener: (eventName: string, callback: (...args: any[]) => void) => void

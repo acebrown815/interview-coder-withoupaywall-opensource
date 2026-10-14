@@ -35,6 +35,14 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     return result;
   })
 
+  // Fetch the live list of chat-capable models available to an OpenAI API key,
+  // so the Settings dropdown can offer whatever models the account actually has
+  // access to instead of a hardcoded, easily outdated list.
+  ipcMain.handle("get-openai-models", async (_event, apiKey?: string) => {
+    const keyToUse = (apiKey && apiKey.trim()) || configHelper.loadConfig().apiKey;
+    return configHelper.getOpenAiModels(keyToUse);
+  })
+
   // Credits handlers
   ipcMain.handle("set-initial-credits", async (_event, credits: number) => {
     const mainWindow = deps.getMainWindow()

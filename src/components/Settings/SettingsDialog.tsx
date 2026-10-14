@@ -185,7 +185,75 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   const [solutionModel, setSolutionModel] = useState("gpt-4o");
   const [debuggingModel, setDebuggingModel] = useState("gpt-4o");
   const [isLoading, setIsLoading] = useState(false);
+  // Live OpenAI model list, fetched with the user's own key instead of relying on a
+  // hardcoded, easily outdated allow-list. Empty until a fetch succeeds.
+  const [openaiModels, setOpenaiModels] = useState<AIModel[]>([]);
+  const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [modelsFetchError, setModelsFetchError] = useState<string | null>(null);
   const { showToast } = useToast();
+
+  // Fetch the chat-capable models available to the given OpenAI key and populate
+  // the model pickers with them. Falls back to the hardcoded defaults (rendered
+  // below) if the fetch fails, so the dialog is never left without options.
+  const fetchOpenAiModels = async (key: string) => {
+    if (!key || !key.trim()) {
+      setOpenaiModels([]);
+      setModelsFetchError(null);
+      return;
+    }
+
+    setIsFetchingModels(true);
+    setModelsFetchError(null);
+    try {
+      const result = await window.electronAPI.getOpenAiModels(key);
+      if (result.success && result.models && result.models.length > 0) {
+        const fetched: AIModel[] = result.models.map((m: { id: string; created?: number }) => ({
+          id: m.id,
+          name: m.id,
+          description: m.created
+            ? `Available in your account · released ${new Date(m.created * 1000).toLocaleDateString()}`
+            : "Available in your account"
+        }));
+        setOpenaiModels(fetched);
+
+        // If the currently selected model isn't one this key actually has access
+        // to (e.g. it's still pointing at an old hardcoded default), default to
+        // the newest available model instead of leaving a stale selection.
+        const fetchedIds = new Set(fetched.map((m) => m.id));
+        const newestId = fetched[0]?.id;
+        if (newestId) {
+          setExtractionModel((prev) => (fetchedIds.has(prev) ? prev : newestId));
+          setSolutionModel((prev) => (fetchedIds.has(prev) ? prev : newestId));
+          setDebuggingModel((prev) => (fetchedIds.has(prev) ? prev : newestId));
+        }
+      } else {
+        setOpenaiModels([]);
+        setModelsFetchError(result.error || "Couldn't fetch available models.");
+      }
+    } catch (error) {
+      console.error("Failed to fetch OpenAI models:", error);
+      setOpenaiModels([]);
+      setModelsFetchError("Couldn't fetch available models.");
+    } finally {
+      setIsFetchingModels(false);
+    }
+  };
+
+  // Auto-fetch (debounced) whenever the OpenAI key changes while the dialog is
+  // open, so pasting a new key refreshes the dropdown without an extra click.
+  useEffect(() => {
+    if (!open || apiProvider !== "openai") return;
+    if (!apiKey || !apiKey.trim()) {
+      setOpenaiModels([]);
+      setModelsFetchError(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      fetchOpenAiModels(apiKey);
+    }, 800);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKey, apiProvider, open]);
 
   // Sync with external open state
   useEffect(() => {
@@ -237,12 +305,16 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   // Handle API provider change
   const handleProviderChange = (provider: APIProvider) => {
     setApiProvider(provider);
-    
+
     // Reset models to defaults when changing provider
     if (provider === "openai") {
       setExtractionModel("gpt-4o");
       setSolutionModel("gpt-4o");
       setDebuggingModel("gpt-4o");
+      // Re-fetch the live list for this key rather than showing a stale list
+      // from a previous key/provider switch.
+      setOpenaiModels([]);
+      setModelsFetchError(null);
     } else if (provider === "gemini") {
       setExtractionModel("gemini-1.5-pro");
       setSolutionModel("gemini-1.5-pro");
@@ -342,7 +414,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                   />
                   <div className="flex flex-col">
                     <p className="font-medium text-white text-sm">OpenAI</p>
-                    <p className="text-xs text-white/60">GPT-4o models</p>
+                    <p className="text-xs text-white/60">Loaded from your account</p>
                   </div>
                 </div>
               </div>
@@ -415,6 +487,28 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
             <p className="text-xs text-white/50">
               Your API key is stored locally and never sent to any server except {apiProvider === "openai" ? "OpenAI" : "Google"}
             </p>
+            {apiProvider === "openai" && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => fetchOpenAiModels(apiKey)}
+                  disabled={!apiKey || isFetchingModels}
+                  className="text-xs text-blue-400 hover:underline disabled:text-white/30 disabled:no-underline disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {isFetchingModels ? "Fetching available models..." : "Refresh available models"}
+                </button>
+                {!isFetchingModels && openaiModels.length > 0 && (
+                  <span className="text-xs text-white/40">
+                    · {openaiModels.length} found in your account
+                  </span>
+                )}
+              </div>
+            )}
+            {apiProvider === "openai" && modelsFetchError && (
+              <p className="text-xs text-yellow-500/80">
+                {modelsFetchError} Showing default models below instead.
+              </p>
+            )}
             <div className="mt-2 p-2 rounded-md bg-white/5 border border-white/10">
               <p className="text-xs text-white/80 mb-1">Don't have an API key?</p>
               {apiProvider === "openai" ? (
@@ -504,61 +598,65 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
             <label className="text-sm font-medium text-white">AI Model Selection</label>
             <p className="text-xs text-white/60 -mt-3 mb-2">
               Select which models to use for each stage of the process
+              {apiProvider === "openai" && openaiModels.length > 0 && " — live list from your OpenAI account"}
             </p>
-            
+
             {modelCategories.map((category) => {
-              // Get the appropriate model list based on selected provider
-              const models = 
-                apiProvider === "openai" ? category.openaiModels : 
-                apiProvider === "gemini" ? category.geminiModels :
-                category.anthropicModels;
+              // Get the appropriate model list based on selected provider. For OpenAI,
+              // prefer the live list fetched from the account; fall back to the
+              // hardcoded defaults only if that fetch hasn't succeeded (no key yet,
+              // still loading, or the request failed).
+              const models =
+                apiProvider === "openai"
+                  ? (openaiModels.length > 0 ? openaiModels : category.openaiModels)
+                  : apiProvider === "gemini" ? category.geminiModels :
+                    category.anthropicModels;
               
+              // Determine which state to use based on category key
+              const currentValue =
+                category.key === 'extractionModel' ? extractionModel :
+                category.key === 'solutionModel' ? solutionModel :
+                debuggingModel;
+
+              // Determine which setter function to use
+              const setValue =
+                category.key === 'extractionModel' ? setExtractionModel :
+                category.key === 'solutionModel' ? setSolutionModel :
+                setDebuggingModel;
+
+              const selectedModel = models.find((m) => m.id === currentValue);
+
               return (
                 <div key={category.key} className="mb-4">
-                  <label className="text-sm font-medium text-white mb-1 block">
+                  <label
+                    htmlFor={`model-select-${category.key}`}
+                    className="text-sm font-medium text-white mb-1 block"
+                  >
                     {category.title}
                   </label>
                   <p className="text-xs text-white/60 mb-2">{category.description}</p>
-                  
-                  <div className="space-y-2">
-                    {models.map((m) => {
-                      // Determine which state to use based on category key
-                      const currentValue = 
-                        category.key === 'extractionModel' ? extractionModel :
-                        category.key === 'solutionModel' ? solutionModel :
-                        debuggingModel;
-                      
-                      // Determine which setter function to use
-                      const setValue = 
-                        category.key === 'extractionModel' ? setExtractionModel :
-                        category.key === 'solutionModel' ? setSolutionModel :
-                        setDebuggingModel;
-                        
-                      return (
-                        <div
-                          key={m.id}
-                          className={`p-2 rounded-lg cursor-pointer transition-colors ${
-                            currentValue === m.id
-                              ? "bg-white/10 border border-white/20"
-                              : "bg-black/30 border border-white/5 hover:bg-white/5"
-                          }`}
-                          onClick={() => setValue(m.id)}
-                        >
-                          <div className="flex items-center gap-2">
-                            <div
-                              className={`w-3 h-3 rounded-full ${
-                                currentValue === m.id ? "bg-white" : "bg-white/20"
-                              }`}
-                            />
-                            <div>
-                              <p className="font-medium text-white text-xs">{m.name}</p>
-                              <p className="text-xs text-white/60">{m.description}</p>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+
+                  <select
+                    id={`model-select-${category.key}`}
+                    value={currentValue}
+                    onChange={(e) => setValue(e.target.value)}
+                    className="w-full p-2 rounded-lg bg-black/50 border border-white/10 text-white text-xs focus:outline-none focus:border-white/30 cursor-pointer"
+                  >
+                    {/* Keep a saved model selectable even if it isn't in the current list */}
+                    {!selectedModel && currentValue && (
+                      <option value={currentValue} className="bg-black text-white">
+                        {currentValue}
+                      </option>
+                    )}
+                    {models.map((m) => (
+                      <option key={m.id} value={m.id} className="bg-black text-white">
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedModel?.description && (
+                    <p className="text-xs text-white/50 mt-1">{selectedModel.description}</p>
+                  )}
                 </div>
               );
             })}

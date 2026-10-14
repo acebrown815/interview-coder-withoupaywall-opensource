@@ -60,13 +60,15 @@ export class ConfigHelper extends EventEmitter {
    */
   private sanitizeModelSelection(model: string, provider: "openai" | "gemini" | "anthropic"): string {
     if (provider === "openai") {
-      // Only allow gpt-4o and gpt-4o-mini for OpenAI
-      const allowedModels = ['gpt-4o', 'gpt-4o-mini'];
-      if (!allowedModels.includes(model)) {
-        console.warn(`Invalid OpenAI model specified: ${model}. Using default model: gpt-4o`);
+      // OpenAI models are now selected from the live /v1/models list fetched with the
+      // user's own API key (see getOpenAiModels), so we no longer restrict to a fixed
+      // allow-list here -- that would just clobber a validly-fetched newer model id
+      // back to an older default. Only guard against an empty/missing value.
+      if (!model || !model.trim()) {
+        console.warn(`No OpenAI model specified. Using default model: gpt-4o`);
         return 'gpt-4o';
       }
-      return model;
+      return model.trim();
     } else if (provider === "gemini")  {
       // Only allow gemini-1.5-pro and gemini-2.0-flash for Gemini
       const allowedModels = ['gemini-1.5-pro', 'gemini-2.0-flash'];
@@ -344,7 +346,57 @@ export class ConfigHelper extends EventEmitter {
       return { valid: false, error: errorMessage };
     }
   }
-  
+
+  /**
+   * Fetch the list of models available to this OpenAI API key and filter it down to
+   * the chat/vision-capable models this app can actually use for extraction, solution
+   * generation, and debugging. OpenAI's /v1/models endpoint returns every model the
+   * key can see (embeddings, tts, whisper, dall-e, moderation, fine-tunes, etc.) with
+   * no capability metadata, so we filter by id pattern rather than a hardcoded list --
+   * that way newly released chat models show up automatically without a code change.
+   */
+  public async getOpenAiModels(apiKey: string): Promise<{ success: boolean; models?: { id: string; created?: number }[]; error?: string }> {
+    if (!apiKey || !apiKey.trim()) {
+      return { success: false, error: "No API key provided." };
+    }
+
+    try {
+      const openai = new OpenAI({ apiKey: apiKey.trim() });
+      const response = await openai.models.list();
+      const allModels = response.data || [];
+
+      const INCLUDE_PATTERN = /^(gpt-|o[0-9]|chatgpt-)/i;
+      const EXCLUDE_PATTERN = /(audio|realtime|transcribe|tts|whisper|embedding|moderation|-image|dall-e|davinci|babbage|curie|instruct|-edit|search|similarity)/i;
+
+      const chatModels = allModels
+        .filter((m: any) => typeof m.id === "string")
+        .filter((m: any) => !m.id.includes(":")) // exclude fine-tuned model ids (ft:...)
+        .filter((m: any) => INCLUDE_PATTERN.test(m.id) && !EXCLUDE_PATTERN.test(m.id))
+        .map((m: any) => ({ id: m.id as string, created: m.created as number | undefined }))
+        // Newest models first, when the API provides a creation timestamp
+        .sort((a, b) => (b.created || 0) - (a.created || 0));
+
+      if (chatModels.length === 0) {
+        return { success: false, error: "No chat-capable models found for this API key." };
+      }
+
+      return { success: true, models: chatModels };
+    } catch (error: any) {
+      console.error('Failed to fetch OpenAI models:', error);
+
+      let errorMessage = 'Failed to fetch available models from OpenAI.';
+      if (error.status === 401) {
+        errorMessage = 'Invalid API key. Please check your OpenAI key and try again.';
+      } else if (error.status === 429) {
+        errorMessage = 'Rate limit exceeded while fetching models. Please try again shortly.';
+      } else if (error.message) {
+        errorMessage = `Error: ${error.message}`;
+      }
+
+      return { success: false, error: errorMessage };
+    }
+  }
+
   /**
    * Test Gemini API key
    * Note: This is a simplified implementation since we don't have the actual Gemini client

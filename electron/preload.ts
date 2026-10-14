@@ -215,8 +215,10 @@ const electronAPI = {
     }
   },
   checkApiKey: () => ipcRenderer.invoke("check-api-key"),
-  validateApiKey: (apiKey: string) => 
+  validateApiKey: (apiKey: string) =>
     ipcRenderer.invoke("validate-api-key", apiKey),
+  getOpenAiModels: (apiKey?: string) =>
+    ipcRenderer.invoke("get-openai-models", apiKey),
   openExternal: (url: string) => 
     ipcRenderer.invoke("openExternal", url),
   onApiKeyInvalid: (callback: () => void) => {

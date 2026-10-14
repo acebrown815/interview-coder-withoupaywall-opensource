@@ -196,6 +196,28 @@ export class ProcessingHelper {
     }
   }
 
+  /**
+   * Calls the OpenAI Chat Completions API, transparently retrying without the
+   * `temperature` parameter if the selected model rejects it. Newer reasoning
+   * models (o-series, some GPT-5 variants) only support the default temperature
+   * and return a 400 `unsupported_parameter` error for any explicit value. Rather
+   * than hardcode a list of which model names currently do this -- a list that
+   * goes stale every time OpenAI ships a new model family -- we just retry once
+   * without the parameter when the API tells us it isn't supported.
+   */
+  private async createOpenAiChatCompletion(params: Record<string, any>): Promise<any> {
+    try {
+      return await this.openaiClient!.chat.completions.create(params as any);
+    } catch (error: any) {
+      if (error?.code === "unsupported_parameter" && error?.param === "temperature" && "temperature" in params) {
+        console.warn(`Model "${params.model}" doesn't support a custom temperature; retrying with the model default.`);
+        const { temperature, ...paramsWithoutTemperature } = params;
+        return await this.openaiClient!.chat.completions.create(paramsWithoutTemperature as any);
+      }
+      throw error;
+    }
+  }
+
   public async processScreenshots(): Promise<void> {
     const mainWindow = this.deps.getMainWindow()
     if (!mainWindow) return
@@ -495,10 +517,12 @@ export class ProcessingHelper {
         ];
 
         // Send to OpenAI Vision API
-        const extractionResponse = await this.openaiClient.chat.completions.create({
+        const extractionResponse = await this.createOpenAiChatCompletion({
           model: config.extractionModel || "gpt-4o",
           messages: messages,
-          max_tokens: 4000,
+          // OpenAI renamed this parameter; newer models (o-series, gpt-5.x, etc.)
+          // reject the legacy `max_tokens` name outright with a 400 error.
+          max_completion_tokens: 4000,
           temperature: 0.2
         });
 
@@ -774,13 +798,13 @@ Your solution should be efficient, well-commented, and handle edge cases.
         }
         
         // Send to OpenAI API
-        const solutionResponse = await this.openaiClient.chat.completions.create({
+        const solutionResponse = await this.createOpenAiChatCompletion({
           model: config.solutionModel || "gpt-4o",
           messages: [
             { role: "system", content: "You are an expert coding interview assistant. Provide clear, optimal solutions with detailed explanations." },
             { role: "user", content: promptText }
           ],
-          max_tokens: 4000,
+          max_completion_tokens: 4000,
           temperature: 0.2
         });
 
@@ -1066,10 +1090,10 @@ If you include code examples, use proper markdown code blocks with language spec
           });
         }
 
-        const debugResponse = await this.openaiClient.chat.completions.create({
+        const debugResponse = await this.createOpenAiChatCompletion({
           model: config.debuggingModel || "gpt-4o",
           messages: messages,
-          max_tokens: 4000,
+          max_completion_tokens: 4000,
           temperature: 0.2
         });
         
